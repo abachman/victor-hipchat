@@ -24,13 +24,17 @@ func main() {
 		bot.Chat().Send(roomID, message)
 	})
 
+	// presence check
+	bot.HandleFunc("pat\\?", func(s victor.State) {
+		s.Chat().Send(s.Message().ChannelID(), fmt.Sprintf("I'm here, %s", s.Message().UserName()))
+	})
+
+	// response check
 	bot.HandleCommandFunc("hello|hi|howdy", func(s victor.State) {
-		fmt.Println("someone said hello to me!")
 		s.Chat().Send(s.Message().ChannelID(), fmt.Sprintf("Hello yourself, %s", s.Message().UserName()))
 	})
 
 	bot.HandleFunc(`(?:^r| r)([0-9]{4,6})([^0-9]|$)`, func(s victor.State) {
-		fmt.Println("possible redphone ticket:", s.Params()[0])
 		reply := RequestTicketMessage(s.Message().ChannelID(), s.Params()[0])
 		if len(reply) > 0 {
 			bot.Chat().Send(s.Message().ChannelID(), reply)

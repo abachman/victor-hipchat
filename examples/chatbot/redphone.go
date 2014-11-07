@@ -2,17 +2,12 @@ package main
 
 import (
 	"fmt"
-	// "log"
 	"net/http"
 	"os"
-	"regexp"
-
-	// "github.com/figure53/PatBot/hipchat"
 )
 
 // e.g. r13402
 var (
-	redphoneTicketID = regexp.MustCompile(`(?:^r| r)([0-9]{4,6})([^0-9]|$)`)
 	redphoneUrl      = os.Getenv("BOT_REDPHONE_URL")
 	redphoneEndpoint = "http://redphonesupport.dev/r/"
 )
