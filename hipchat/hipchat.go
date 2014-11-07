@@ -1,6 +1,6 @@
 // Based on the Slack library for victor https://github.com/brettbuddin/victor
 
-package hipchatRobot
+package hipchat
 
 import (
 	"encoding/json"
@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -18,39 +19,86 @@ import (
 
 func init() {
 	chat.Register("hipchat", func(r chat.Robot) chat.Adapter {
-		team := os.Getenv("VICTOR_HIPCHAT_ROOMS")
+		rooms := os.Getenv("VICTOR_HIPCHAT_ROOMS")
 		token := os.Getenv("VICTOR_HIPCHAT_TOKEN")
+		webhookUrl := os.Getenv("VICTOR_HIPCHAT_WEBHOOK")
 
-		if team == "" || token == "" {
+		if rooms == "" || token == "" {
 			log.Println("The following environment variables are required:")
-			log.Println("VICTOR_HIPCHAT_ROOMS, VICTOR_HIPCHAT_TOKEN")
+			log.Println("VICTOR_HIPCHAT_ROOMS, VICTOR_HIPCHAT_TOKEN, VICTOR_HIPCHAT_WEBHOOK")
 			os.Exit(1)
 		}
 
+		// A HipChat API v2 Client
 		client := hipchat.NewClient(token)
 
-		return &hipchatRobot{
+		hook, _ := url.Parse(webhookUrl)
+
+		hookName := "victor webhook"
+		hookEvent := "room_message"
+		hookUrl := fmt.Sprintf("%s://%s%s", hook.Scheme, hook.Host, hook.Path)
+
+		// Initialize HipChat Webhooks - your bot must have admin access to perform
+		// this action. Failure to create webhooks won't stop the bot from
+		// launching.
+		var exists bool
+		for _, roomId := range strings.Split(rooms, ",") {
+			log.Println("[hipchat adapter init] checking", roomId, "for existing webhook")
+			hooks, resp, err := client.Room.GetAllWebhooks(roomId, nil)
+			handleRequestError(resp, err)
+			if err != nil {
+				continue
+			}
+
+			exists = false
+			for _, webhook := range hooks.Webhooks {
+				if webhook.Event == hookEvent && webhook.URL == hookUrl {
+					exists = true
+					break
+				}
+			}
+
+			if !exists {
+				log.Println("[hipchat adapter init] creating webhook")
+				_, resp, err := client.Room.CreateWebhook(roomId, &hipchat.CreateWebhookRequest{
+					Name:  hookName,
+					Event: hookEvent,
+					URL:   hookUrl,
+				})
+				handleRequestError(resp, err)
+
+				if err != nil {
+					log.Println("[hipchat adapter init] failed to create webhook")
+				}
+			}
+		}
+
+		return &adapter{
 			robot:  r,
 			client: client,
+			hook:   hook,
 		}
 	})
 }
 
-type hipchatRobot struct {
+type adapter struct {
 	robot  chat.Robot
 	client *hipchat.Client
+	hook   *url.URL
+	rooms  []*hipchat.Room
 }
 
-func (h *hipchatRobot) Run() {
-	h.robot.HTTP().HandleFunc("/patbot/hipchat-webhook", func(w http.ResponseWriter, r *http.Request) {
+func (h *adapter) Run() {
+	log.Println("[hipchat adapter Run] initializing webhook at", h.hook.Path)
+	h.robot.HTTP().HandleFunc(h.hook.Path, func(w http.ResponseWriter, r *http.Request) {
 		// debug message JSON
 		body, _ := ioutil.ReadAll(r.Body)
 
 		msg := &WebhookMessage{}
 		err := json.NewDecoder(strings.NewReader(string(body))).Decode(msg)
 		if err != nil {
-			fmt.Println("[hipchat-webhook] failed to decode message:", err)
-			fmt.Println(string(body))
+			log.Println("[hipchat adapter Run] failed to decode message:", err)
+			log.Println(string(body))
 		}
 
 		// now communicate message to victor
@@ -64,23 +112,31 @@ func (h *hipchatRobot) Run() {
 	}).Methods("POST")
 }
 
-func (s *hipchatRobot) Send(channelID, msg string) {
-	//	Color         string
-	//	Message       string
-	//	Notify        bool
-	//	MessageFormat string
-	resp, err := s.client.Room.Notification(channelID, &hipchat.NotificationRequest{
+func (h *adapter) SendHtml(channelID, msg string) {
+	resp, err := h.client.Room.Notification(channelID, &hipchat.NotificationRequest{
 		Message:       msg,
 		Notify:        true,
 		MessageFormat: "html",
 	})
 
 	if err != nil {
-		log.Println("error sending to chat:", err, resp.Body)
+		log.Println("[hipchat adapter SendHtml] error sending to chat:", err, resp.Body)
 	}
 }
 
-func (s *hipchatRobot) Stop() {
+func (h *adapter) Send(channelID, msg string) {
+	resp, err := h.client.Room.Notification(channelID, &hipchat.NotificationRequest{
+		Message:       msg,
+		Notify:        true,
+		MessageFormat: "text",
+	})
+
+	if err != nil {
+		log.Println("[hipchat adapter Send] error sending to chat:", err, resp.Body)
+	}
+}
+
+func (s *adapter) Stop() {
 	// no need, webhook listeners are stopped with the HTTP server
 }
 
@@ -108,6 +164,21 @@ func (m *message) ChannelName() string {
 func (m *message) Text() string {
 	return m.text
 }
+
+// report API errors
+func handleRequestError(resp *http.Response, err error) {
+	if err != nil {
+		if resp != nil {
+			log.Printf("[hipchat adapter] request failed: %+v\n", resp)
+			body, _ := ioutil.ReadAll(resp.Body)
+			log.Printf("%+v\n", body)
+		} else {
+			log.Println("[hipchat adapter] request failed, response is nil")
+		}
+		log.Println(err)
+	}
+}
+
 // hipchat webhook API
 type User struct {
 	ID          int    `json:"id"`
